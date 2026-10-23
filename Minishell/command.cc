@@ -49,21 +49,91 @@ void signchld_handler(int sig)
 }
 
 
-
-
-
 void parse(std::vector<Token> &tokens)
 {
-    Command currentCommand;
     SimpleCommand *currentSimpleCommand = new SimpleCommand();
+    bool expectout = false;
+    bool expectin = false;
+    bool expecterr = false;
+    bool expectappend = false;
+    bool expectoutanderr = false;
 
-    currentCommand.execute();
-    /*
-      Implement this function 
-      you must parse for all possible tokens scenario
-      right now command.execute only print the format , you will inject it in your logic.
+    for (const auto &token : tokens){
+        switch (token.type){
+            case TOKEN_EOF:
+                if (currentSimpleCommand->_numberOfArguments > 0){
+                    Command::_currentCommand.insertSimpleCommand(currentSimpleCommand);
+                }else{
+                    delete currentSimpleCommand;
+                }
+                break;
+            case TOKEN_COMMAND:
+            case TOKEN_ARGUMENT:
+                if (expectout){
+                    Command::_currentCommand._outFile = strdup(token.value.c_str());
+                    expectout = false;
+                }else if (expectin){
+                    Command::_currentCommand._inputFile = strdup(token.value.c_str());
+                    expectin = false;
+                }else if (expecterr){
+                    Command::_currentCommand._errFile = strdup(token.value.c_str());
+                    expecterr = false;
+                }else if (expectappend){
+                    Command::_currentCommand._outFile = strdup(token.value.c_str());
+                    Command::_currentCommand._append = 1;
+                    expectappend = false;
+                }else if (expectoutanderr){
+                    Command::_currentCommand._outFile = strdup(token.value.c_str());
+                    Command::_currentCommand._errFile = strdup(token.value.c_str());
+                    Command::_currentCommand._out_error = 1;
+                    expectoutanderr = false;
+                }else{
+                    if (token.value.find('*') != std::string::npos || token.value.find('?') != std::string::npos){
+                        glob_t result;
+                        if (glob(token.value.c_str(), GLOB_NOCHECK | GLOB_TILDE, NULL, &result) == 0){
+                            for (size_t i = 0; i < result.gl_pathc; ++i){
+                                currentSimpleCommand->insertArgument(strdup(result.gl_pathv[i]));
+                            
+                            }
+                        }else{
+                            currentSimpleCommand->insertArgument(strdup(token.value.c_str()));
+                        }
+                        globfree(&result);
+                    }else{
+                        currentSimpleCommand->insertArgument(strdup(token.value.c_str()));
+                }
+                break;
 
-    */
+                case TOKEN_PIPE:
+                    Command::_currentCommand.insertSimpleCommand(currentSimpleCommand);
+                    currentSimpleCommand = new SimpleCommand();
+                    break;
+                case TOKEN_REDIRECT:
+                    expectout = true;
+                    break;
+                case TOKEN_APPEND:
+                    expectappend = true;
+                    break;
+                case TOKEN_INPUT:
+                    expectin = true;
+                    break;
+                case TOKEN_ERROR:
+                    expecterr = true;
+                    break;
+                case TOKEN_REDIRECT_AND_ERROR:
+                    expectoutanderr = true;
+                    break;
+                case TOKEN_BACKGROUND:
+                    Command::_currentCommand._background = 1;
+                    break;
+                default:
+                    break;
+            }
+    }
+    if (Command :: _currentCommand._numberOfSimpleCommands > 0){
+        Command:: _currentCommand.execute();
+    }
+}
 }
 
 SimpleCommand::SimpleCommand()
@@ -84,7 +154,6 @@ void SimpleCommand::insertArgument(char *argument)
 
     _arguments[_numberOfArguments] = argument;
     _arguments[_numberOfArguments + 1] = NULL;
-
     _numberOfArguments++;
 }
 
@@ -99,6 +168,9 @@ Command::Command()
     _inputFile = 0;
     _errFile = 0;
     _background = 0;
+    _append = 0;
+    _background = 0;
+    _out_error = 0;
 }
 
 void Command::insertSimpleCommand(SimpleCommand *simpleCommand)
@@ -146,6 +218,8 @@ void Command::clear()
     _outFile = 0;
     _inputFile = 0;
     _errFile = 0;
+    _out_error = 0;
+    _append = 0;
     _background = 0;
 }
 
@@ -178,9 +252,6 @@ void Command::print()
 void Command::execute()
 {
     print();
-    /*
-        Write your code here
-    */
 
     clear();
     prompt();
