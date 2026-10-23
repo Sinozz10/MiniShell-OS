@@ -25,8 +25,31 @@
 #include <cctype>
 #include <iostream>
 #include <sstream>
+#include <cerrno>
 #include "command.h"
 #include "tokenizer.h"
+
+//This fn is to handle signal from child proccesses
+void signchld_handler(int sig)
+{
+    int saved_errno = errno;
+    int pid;
+
+    while ((pid = waitpid(-1, NULL, WNOHANG)) > 0)
+    {
+        int logger = open("log.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (logger >= 0){
+            char message[256];
+            int len = snprintf(message, sizeof(message), "Child process %d terminated\n", pid);
+            write(logger, message, len);
+            close(logger);
+        }
+    }
+    errno = saved_errno;
+}
+
+
+
 
 
 void parse(std::vector<Token> &tokens)
