@@ -251,10 +251,105 @@ void Command::print()
 
 void Command::execute()
 {
+    if (_numberOfSimpleCommands == 0)
+    {
+        return;
+    }
+
     print();
 
+    if (strcmp(_simpleCommands[0]->_arguments[0], "exit") == 0)
+    {
+        printf("Exiting myshell...\n");
+        exit(0);
+    }
+    
+    if (strcmp(_simpleCommands[0]->_arguments[0], "cd") == 0)
+    {
+        const char *directory = _simpleCommands[0]->_numberOfArguments > 1 ? _simpleCommands[0]->_arguments[1] : getenv("HOME");
+
+        if (chdir(directory) < 0)
+        {
+            perror("cd");
+        }
+        clear();
+        return;    
+    }
+
+    int default_in = dup(0);
+    int default_out = dup(1);
+    int default_err = dup(2);
+    int fdin = default_in;
+
+    if (_inputFile)
+    {
+        fdin = open(_inputFile, O_RDONLY);
+        if (fdin < 0)
+        {
+            perror("failed to open input file");
+            clear();
+            return;
+        }
+    }
+
+    int pid;
+    for (int i = 0; i < _numberOfSimpleCommands; i++)
+    {
+        dup2(fdin, 0);
+        close(fdin);
+
+        int fdout;
+        if (i == _numberOfSimpleCommands - 1)
+        {
+            if (_outFile){
+                int flags = O_WRONLY | O_CREAT | (_append ? O_APPEND : O_TRUNC);
+                fdout = open(_outFile, flags, 0666);
+                if (fdout < 0)
+                {
+                    perror("failed to open output file");
+                    clear();
+                    exit(1);
+                }
+            }else{
+                fdout = dup(default_out);
+            }
+        }else{
+            int pipefd[2];
+            pipe(pipefd);
+            fdout = pipefd[1];
+            fdin = pipefd[0];
+        }
+        dup2(fdout, 1);
+        close(fdout);
+
+        if (_errFile && (i == _numberOfSimpleCommands - 1)){
+            int flags = O_WRONLY | O_CREAT | (_out_error ? O_APPEND : O_TRUNC);
+            int fderr = open(_errFile, flags, 0666);
+            if (fderr >= 0){
+                dup2(fderr, 2);
+                close(fderr);
+        }
+        }
+
+        pid = fork();
+        if (pid == 0){
+            execvp(_simpleCommands[i]->_arguments[0], _simpleCommands[i]->_arguments);
+            perror("execvp failed");
+            exit(1);
+        }
+    }
+    dup2(default_in, 0);
+    dup2(default_out, 1);
+    dup2(default_err, 2);
+    close(default_in);
+    close(default_out);
+    close(default_err);
+
+    if (!_background){
+        waitpid(pid, NULL, 0);
+    }
+    
     clear();
-    prompt();
 }
 
 void Command::prompt()
