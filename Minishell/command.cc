@@ -332,6 +332,8 @@ void Command::execute()
             }
         }
 
+        fflush(stdout); // flush stdout before fork to avoid duplicate output (so no collision yhsal with parent and child)
+        fflush(stderr); // flush stderr before fork to avoid duplicate output
         pid = fork();
         if (pid == 0){
             execvp(_simpleCommands[i]->_arguments[0], _simpleCommands[i]->_arguments);
