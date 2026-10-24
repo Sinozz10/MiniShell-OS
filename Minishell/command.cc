@@ -354,12 +354,16 @@ void Command::execute()
 
 void Command::prompt()
 {
-    printf("myshell>");
-    fflush(stdout);
     std::string input;
     while (true)
     {
-        std::getline(std::cin, input); 
+        printf("myshell>");
+        fflush(stdout);
+        if (!std::getline(std::cin, input)) //Handle EOF (Ctrl+D) to exit the shell
+        {
+            printf("\n");
+            break;
+        }
         std::vector<Token> tokens = tokenize(input);
         parse(tokens);
     }
@@ -370,6 +374,16 @@ SimpleCommand *Command::_currentSimpleCommand;
 
 int main()
 {
+    signal(SIGCHLD, signchld_handler);
+    struct sigaction sa;
+    sa.sa_handler = signchld_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    if (sigaction(SIGCHLD, &sa, NULL) == -1)
+    {
+        perror("sigaction");
+        exit(1);
+    }
     Command::_currentCommand.prompt();
     return 0;
 }
