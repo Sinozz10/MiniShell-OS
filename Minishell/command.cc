@@ -28,21 +28,23 @@
 #include <cerrno>
 #include "command.h"
 #include "tokenizer.h"
+#include <algorithm>
 
-//This fn is to handle signal from child proccesses
-void signchld_handler(int sig)
+// reap background zombie processes so they don't pile up
+void zombie_handler(int sig)
 {
     int saved_errno = errno;
     int pid;
 
+    // wait for any child without blocking
     while ((pid = waitpid(-1, NULL, WNOHANG)) > 0)
     {
-        int logger = open("log.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
-        if (logger >= 0){
-            char message[256];
-            int len = snprintf(message, sizeof(message), "Child process %d terminated\n", pid);
-            write(logger, message, len);
-            close(logger);
+        int log_fd = open("log.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (log_fd >= 0){
+            char msg[256];
+            int len = snprintf(msg, sizeof(msg), "Child process %d terminated\n", pid);
+            write(log_fd, msg, len);
+            close(log_fd);
         }
     }
     errno = saved_errno;
@@ -51,73 +53,87 @@ void signchld_handler(int sig)
 
 void parse(std::vector<Token> &tokens)
 {
-    SimpleCommand *currentSimpleCommand = new SimpleCommand();
-    bool expectout = false, expectin = false, expecterr = false, expectappend = false, expectoutanderr = false;
+    SimpleCommand *curr_cmd = new SimpleCommand();
+    
+    // flags for redirection state machine
+    bool redir_out = false;
+    bool redir_in = false;
+    bool redir_err = false;
+    bool redir_app = false;
+    bool redir_both = false;
 
-    for (const auto &token : tokens){
-        switch (token.type){
+    for (const auto &tok : tokens){
+        // printf("parsing: %s\n", tok.value.c_str()); // debug
+
+        switch (tok.type){
             case TOKEN_EOF:
-                if (currentSimpleCommand->_numberOfArguments > 0){
-                    Command::_currentCommand.insertSimpleCommand(currentSimpleCommand);
-                }else{
-                    delete currentSimpleCommand;
+                if (curr_cmd->_numberOfArguments > 0) {
+                    Command::_currentCommand.insertSimpleCommand(curr_cmd);
+                } else {
+                    delete curr_cmd;
                 }
                 break;
+                
             case TOKEN_COMMAND:
             case TOKEN_ARGUMENT:
-                if (expectout){
-                    Command::_currentCommand._outFile = strdup(token.value.c_str());
-                    expectout = false;
-                }else if (expectin){
-                    Command::_currentCommand._inputFile = strdup(token.value.c_str());
-                    expectin = false;
-                }else if (expecterr){
-                    Command::_currentCommand._errFile = strdup(token.value.c_str());
-                    expecterr = false;
-                }else if (expectappend){
-                    Command::_currentCommand._outFile = strdup(token.value.c_str());
+                if (redir_out){
+                    Command::_currentCommand._outFile = strdup(tok.value.c_str());
+                    redir_out = false;
+                }else if (redir_in){
+                    Command::_currentCommand._inputFile = strdup(tok.value.c_str());
+                    redir_in = false;
+                }else if (redir_err){
+                    Command::_currentCommand._errFile = strdup(tok.value.c_str());
+                    redir_err = false;
+                }else if (redir_app){
+                    Command::_currentCommand._outFile = strdup(tok.value.c_str());
                     Command::_currentCommand._append = 1;
-                    expectappend = false;
-                }else if (expectoutanderr){
-                    Command::_currentCommand._outFile = strdup(token.value.c_str());
-                    Command::_currentCommand._errFile = strdup(token.value.c_str());
+                    redir_app = false;
+                }else if (redir_both){
+                    Command::_currentCommand._outFile = strdup(tok.value.c_str());
+                    Command::_currentCommand._errFile = strdup(tok.value.c_str());
                     Command::_currentCommand._out_error = 1;
-                    expectoutanderr = false;
+                    redir_both = false;
                 }else{
-                    if (token.value.find('*') != std::string::npos || token.value.find('?') != std::string::npos){
-                        glob_t result;
-                        if (glob(token.value.c_str(), GLOB_NOCHECK | GLOB_TILDE, NULL, &result) == 0){
-                            for (size_t i = 0; i < result.gl_pathc; ++i){
-                                currentSimpleCommand->insertArgument(strdup(result.gl_pathv[i]));
+                    // strip quotes if the user typed them
+                    std::string clean_str = tok.value;
+                    clean_str.erase(std::remove(clean_str.begin(), clean_str.end(), '\"'), clean_str.end());
+
+                    // handle wildcards with the clean string
+                    if (clean_str.find('*') != std::string::npos || clean_str.find('?') != std::string::npos){
+                        glob_t res;
+                        if (glob(clean_str.c_str(), GLOB_NOCHECK | GLOB_TILDE, NULL, &res) == 0){
+                            for (size_t i = 0; i < res.gl_pathc; ++i){
+                                curr_cmd->insertArgument(strdup(res.gl_pathv[i]));
                             }
                         }else{
-                            currentSimpleCommand->insertArgument(strdup(token.value.c_str()));
+                            curr_cmd->insertArgument(strdup(clean_str.c_str()));
                         }
-                        globfree(&result);
+                        globfree(&res);
                     }else{
-                        currentSimpleCommand->insertArgument(strdup(token.value.c_str()));
+                        curr_cmd->insertArgument(strdup(clean_str.c_str()));
                     }
-                } // <--- THIS WAS THE MISSING BRACE!
+                }
                 break;
 
             case TOKEN_PIPE:
-                Command::_currentCommand.insertSimpleCommand(currentSimpleCommand);
-                currentSimpleCommand = new SimpleCommand();
+                Command::_currentCommand.insertSimpleCommand(curr_cmd);
+                curr_cmd = new SimpleCommand();
                 break;
             case TOKEN_REDIRECT:
-                expectout = true;
+                redir_out = true;
                 break;
             case TOKEN_APPEND:
-                expectappend = true;
+                redir_app = true;
                 break;
             case TOKEN_INPUT:
-                expectin = true;
+                redir_in = true;
                 break;
             case TOKEN_ERROR:
-                expecterr = true;
+                redir_err = true;
                 break;
             case TOKEN_REDIRECT_AND_ERROR:
-                expectoutanderr = true;
+                redir_both = true;
                 break;
             case TOKEN_BACKGROUND:
                 Command::_currentCommand._background = 1;
@@ -125,11 +141,10 @@ void parse(std::vector<Token> &tokens)
             default:
                 break;
         }
-    } // Closes the switch statement
+    }
     
-    // Now safely OUTSIDE the for loop!
-    if (Command :: _currentCommand._numberOfSimpleCommands > 0){
-        Command:: _currentCommand.execute();
+    if (Command::_currentCommand._numberOfSimpleCommands > 0){
+        Command::_currentCommand.execute();
     }
 }
 
@@ -145,8 +160,7 @@ void SimpleCommand::insertArgument(char *argument)
     if (_numberOfAvailableArguments == _numberOfArguments + 1)
     {
         _numberOfAvailableArguments *= 2;
-        _arguments = (char **)realloc(_arguments,
-                                      _numberOfAvailableArguments * sizeof(char *));
+        _arguments = (char **)realloc(_arguments, _numberOfAvailableArguments * sizeof(char *));
     }
 
     _arguments[_numberOfArguments] = argument;
@@ -191,25 +205,13 @@ void Command::clear()
         {
             free(_simpleCommands[i]->_arguments[j]);
         }
-
         free(_simpleCommands[i]->_arguments);
         free(_simpleCommands[i]);
     }
 
-    if (_outFile)
-    {
-        free(_outFile);
-    }
-
-    if (_inputFile)
-    {
-        free(_inputFile);
-    }
-
-    if (_errFile)
-    {
-        free(_errFile);
-    }
+    if (_outFile) free(_outFile);
+    if (_inputFile) free(_inputFile);
+    if (_errFile) free(_errFile);
 
     _numberOfSimpleCommands = 0;
     _outFile = 0;
@@ -248,13 +250,11 @@ void Command::print()
 
 void Command::execute()
 {
-    if (_numberOfSimpleCommands == 0)
-    {
-        return;
-    }
+    if (_numberOfSimpleCommands == 0) return;
 
     print();
 
+    // check built-ins first
     if (strcmp(_simpleCommands[0]->_arguments[0], "exit") == 0)
     {
         printf("Exiting myshell...\n");
@@ -263,71 +263,73 @@ void Command::execute()
     
     if (strcmp(_simpleCommands[0]->_arguments[0], "cd") == 0)
     {
-        const char *directory = _simpleCommands[0]->_numberOfArguments > 1 ? _simpleCommands[0]->_arguments[1] : getenv("HOME");
-
-        if (chdir(directory) < 0)
-        {
-            perror("cd");
+        const char *dir = _simpleCommands[0]->_numberOfArguments > 1 ? _simpleCommands[0]->_arguments[1] : getenv("HOME");
+        if (chdir(dir) < 0) {
+            perror("cd error");
         }
         clear();
         return;    
     }
 
-    int default_in = dup(0);
-    int default_out = dup(1);
-    int default_err = dup(2);
-    int fdin;
-
+    // backup terminal FDs
+    int tmp_in = dup(0);
+    int tmp_out = dup(1);
+    int tmp_err = dup(2);
+    
+    int current_in;
 
     if (_inputFile){
-        fdin = open(_inputFile, O_RDONLY);
-        if (fdin < 0)
-        {
-            perror("failed to open input file");
+        current_in = open(_inputFile, O_RDONLY);
+        if (current_in < 0) {
+            perror("failed to open input");
             clear();
             return;
         }
-    }else{
-        fdin = dup(default_in);
+    } else {
+        current_in = dup(tmp_in);
     }
 
     int pid;
     for (int i = 0; i < _numberOfSimpleCommands; i++)
     {
-        dup2(fdin, 0);
-        close(fdin);
+        dup2(current_in, 0);
+        close(current_in);
 
-        int fdout;
+        int current_out;
+        
+        // last command handles the final output routing
         if (i == _numberOfSimpleCommands - 1)
         {
             if (_outFile){
                 int flags = O_WRONLY | O_CREAT | (_append ? O_APPEND : O_TRUNC);
-                fdout = open(_outFile, flags, 0666);
-                if (fdout < 0)
-                {
-                    perror("failed to open output file");
+                current_out = open(_outFile, flags, 0666);
+                if (current_out < 0) {
+                    perror("output file err");
                     clear();
                     exit(1);
                 }
-            }else{
-                fdout = dup(default_out);
+            } else {
+                current_out = dup(tmp_out);
             }
-        }else{
-            int pipefd[2];
-            pipe(pipefd);
-            fdout = pipefd[1];
-            fdin = pipefd[0];
+        } else {
+            // setup pipe for next command in chain
+            int p_fd[2];
+            pipe(p_fd);
+            current_out = p_fd[1];
+            current_in = p_fd[0];
         }
-        dup2(fdout, 1);
-        close(fdout);
+        
+        dup2(current_out, 1);
+        close(current_out);
 
+        // handle stderr for the last command
         if (_errFile && (i == _numberOfSimpleCommands - 1)){
-            int flags = O_WRONLY | O_CREAT | (_out_error ? O_APPEND : O_TRUNC);
-            int fderr = open(_errFile, flags, 0666);
-            if (fderr >= 0){
-                dup2(fderr, 2);
-                close(fderr);
-        }
+            int e_flags = O_WRONLY | O_CREAT | (_out_error ? O_APPEND : O_TRUNC);
+            int e_fd = open(_errFile, e_flags, 0666);
+            if (e_fd >= 0){
+                dup2(e_fd, 2);
+                close(e_fd);
+            }
         }
 
         pid = fork();
@@ -337,14 +339,17 @@ void Command::execute()
             exit(1);
         }
     }
-    dup2(default_in, 0);
-    dup2(default_out, 1);
-    dup2(default_err, 2);
-    close(default_in);
-    close(default_out);
-    close(default_err);
+    
+    // reset IO back to terminal
+    dup2(tmp_in, 0);
+    dup2(tmp_out, 1);
+    dup2(tmp_err, 2);
+    close(tmp_in);
+    close(tmp_out);
+    close(tmp_err);
 
     if (!_background){
+        // wait for the final child process to finish
         waitpid(pid, NULL, 0);
     }
     
@@ -358,11 +363,16 @@ void Command::prompt()
     {
         printf("myshell>");
         fflush(stdout);
-        if (!std::getline(std::cin, input)) //Handle EOF (Ctrl+D) to exit the shell
+        
+        // handle Ctrl+D exit gracefully
+        if (!std::getline(std::cin, input)) 
         {
             printf("\n");
             break;
         }
+        
+        if (input.empty()) continue;
+
         std::vector<Token> tokens = tokenize(input);
         parse(tokens);
     }
@@ -373,18 +383,19 @@ SimpleCommand *Command::_currentSimpleCommand;
 
 int main()
 {
-    signal(SIGINT, SIG_IGN);
+    signal(SIGINT, SIG_IGN); // bypass ctrl-c 
     
-    signal(SIGCHLD, signchld_handler);
     struct sigaction sa;
-    sa.sa_handler = signchld_handler;
+    sa.sa_handler = zombie_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    
     if (sigaction(SIGCHLD, &sa, NULL) == -1)
     {
         perror("sigaction");
         exit(1);
     }
+    
     Command::_currentCommand.prompt();
     return 0;
 }

@@ -1,6 +1,1 @@
-Child process 105195 terminated
-Child process 113773 terminated
-Child process 113921 terminated
-Child process 115177 terminated
-Child process 115419 terminated
-Child process 115420 terminated
+Child process 27872 terminated
