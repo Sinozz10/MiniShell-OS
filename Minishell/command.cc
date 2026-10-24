@@ -52,11 +52,7 @@ void signchld_handler(int sig)
 void parse(std::vector<Token> &tokens)
 {
     SimpleCommand *currentSimpleCommand = new SimpleCommand();
-    bool expectout = false;
-    bool expectin = false;
-    bool expecterr = false;
-    bool expectappend = false;
-    bool expectoutanderr = false;
+    bool expectout = false, expectin = false, expecterr = false, expectappend = false, expectoutanderr = false;
 
     for (const auto &token : tokens){
         switch (token.type){
@@ -93,7 +89,6 @@ void parse(std::vector<Token> &tokens)
                         if (glob(token.value.c_str(), GLOB_NOCHECK | GLOB_TILDE, NULL, &result) == 0){
                             for (size_t i = 0; i < result.gl_pathc; ++i){
                                 currentSimpleCommand->insertArgument(strdup(result.gl_pathv[i]));
-                            
                             }
                         }else{
                             currentSimpleCommand->insertArgument(strdup(token.value.c_str()));
@@ -101,39 +96,41 @@ void parse(std::vector<Token> &tokens)
                         globfree(&result);
                     }else{
                         currentSimpleCommand->insertArgument(strdup(token.value.c_str()));
-                }
+                    }
+                } // <--- THIS WAS THE MISSING BRACE!
                 break;
 
-                case TOKEN_PIPE:
-                    Command::_currentCommand.insertSimpleCommand(currentSimpleCommand);
-                    currentSimpleCommand = new SimpleCommand();
-                    break;
-                case TOKEN_REDIRECT:
-                    expectout = true;
-                    break;
-                case TOKEN_APPEND:
-                    expectappend = true;
-                    break;
-                case TOKEN_INPUT:
-                    expectin = true;
-                    break;
-                case TOKEN_ERROR:
-                    expecterr = true;
-                    break;
-                case TOKEN_REDIRECT_AND_ERROR:
-                    expectoutanderr = true;
-                    break;
-                case TOKEN_BACKGROUND:
-                    Command::_currentCommand._background = 1;
-                    break;
-                default:
-                    break;
-            }
-    }
+            case TOKEN_PIPE:
+                Command::_currentCommand.insertSimpleCommand(currentSimpleCommand);
+                currentSimpleCommand = new SimpleCommand();
+                break;
+            case TOKEN_REDIRECT:
+                expectout = true;
+                break;
+            case TOKEN_APPEND:
+                expectappend = true;
+                break;
+            case TOKEN_INPUT:
+                expectin = true;
+                break;
+            case TOKEN_ERROR:
+                expecterr = true;
+                break;
+            case TOKEN_REDIRECT_AND_ERROR:
+                expectoutanderr = true;
+                break;
+            case TOKEN_BACKGROUND:
+                Command::_currentCommand._background = 1;
+                break;
+            default:
+                break;
+        }
+    } // Closes the switch statement
+    
+    // Now safely OUTSIDE the for loop!
     if (Command :: _currentCommand._numberOfSimpleCommands > 0){
         Command:: _currentCommand.execute();
     }
-}
 }
 
 SimpleCommand::SimpleCommand()
@@ -160,14 +157,14 @@ void SimpleCommand::insertArgument(char *argument)
 Command::Command()
 {
     _numberOfAvailableSimpleCommands = 1;
+    
     _simpleCommands = (SimpleCommand **)
-        malloc(_numberOfSimpleCommands * sizeof(SimpleCommand *));
+        malloc(_numberOfAvailableSimpleCommands * sizeof(SimpleCommand *));
 
     _numberOfSimpleCommands = 0;
     _outFile = 0;
     _inputFile = 0;
     _errFile = 0;
-    _background = 0;
     _append = 0;
     _background = 0;
     _out_error = 0;
@@ -279,10 +276,10 @@ void Command::execute()
     int default_in = dup(0);
     int default_out = dup(1);
     int default_err = dup(2);
-    int fdin = default_in;
+    int fdin;
 
-    if (_inputFile)
-    {
+
+    if (_inputFile){
         fdin = open(_inputFile, O_RDONLY);
         if (fdin < 0)
         {
@@ -290,6 +287,8 @@ void Command::execute()
             clear();
             return;
         }
+    }else{
+        fdin = dup(default_in);
     }
 
     int pid;
@@ -374,6 +373,8 @@ SimpleCommand *Command::_currentSimpleCommand;
 
 int main()
 {
+    signal(SIGINT, SIG_IGN);
+    
     signal(SIGCHLD, signchld_handler);
     struct sigaction sa;
     sa.sa_handler = signchld_handler;
